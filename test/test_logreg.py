@@ -13,7 +13,6 @@ import pytest
 import numpy as np
 from regression import (logreg, utils)
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import log_loss
 
 # Load data
 X_train, X_val, y_train, y_val = utils.loadDataset(
