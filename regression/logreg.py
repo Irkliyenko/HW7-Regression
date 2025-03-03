@@ -1,11 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
 
 # Base class for generic regressor
 # (this is already complete!)
 class BaseRegressor():
 
-    def __init__(self, num_feats, learning_rate=0.01, tol=0.001, max_iter=100, batch_size=10):
+    def __init__(self, num_feats, learning_rate=0.01, tol=0.001, max_iter=100, batch_size=10, reg_type="l2", lambda_=0.01):
 
         # Weights are randomly initialized
         self.W = np.random.randn(num_feats + 1).flatten()
@@ -16,6 +17,8 @@ class BaseRegressor():
         self.max_iter = max_iter
         self.batch_size = batch_size
         self.num_feats = num_feats
+        self.reg_type = reg_type
+        self.lambda_ = lambda_
 
         # Define empty lists to store losses over training
         self.loss_hist_train = []
@@ -30,7 +33,7 @@ class BaseRegressor():
     def calculate_gradient(self, y_true, X):
         raise NotImplementedError
     
-    def train_model(self, X_train, y_train, X_val, y_val):
+    def train_model(self, X_train, y_train, X_val, y_val, reg_type="l2", lambda_=0.01):
 
         # Padding data with vector of ones for bias term
         X_train = np.hstack([X_train, np.ones((X_train.shape[0], 1))])
@@ -58,16 +61,16 @@ class BaseRegressor():
             update_sizes = []
 
             # Iterate through batches (one of these loops is one epoch of training)
-            for X_train, y_train in zip(X_batch, y_batch):
-
+            for X_train_1, y_train_1 in zip(X_batch, y_batch):
                 # Make prediction and calculate loss
-                y_pred = self.make_prediction(X_train)
-                train_loss = self.loss_function(y_train, y_pred)
+                y_pred = self.make_prediction(X_train_1)
+                train_loss = self.loss_function(y_train_1, y_pred, reg_type, lambda_)
                 self.loss_hist_train.append(train_loss)
+                # print('total train history:', len(self.loss_hist_train))
 
                 # Update weights
                 prev_W = self.W
-                grad = self.calculate_gradient(y_train, X_train)
+                grad = self.calculate_gradient(y_train_1, X_train_1, reg_type, lambda_)
                 new_W = prev_W - self.lr * grad 
                 self.W = new_W
 
@@ -75,7 +78,7 @@ class BaseRegressor():
                 update_sizes.append(np.abs(new_W - prev_W))
 
                 # Compute validation loss
-                val_loss = self.loss_function(y_val, self.make_prediction(X_val))
+                val_loss = self.loss_function(y_val, self.make_prediction(X_val), reg_type, lambda_)
                 self.loss_hist_val.append(val_loss)
 
             # Define step size as the average parameter update over the past epoch
@@ -108,13 +111,16 @@ class BaseRegressor():
 # Implement logistic regression as a subclass
 class LogisticRegressor(BaseRegressor):
 
-    def __init__(self, num_feats, learning_rate=0.01, tol=0.001, max_iter=100, batch_size=10):
+    def __init__(self, num_feats, learning_rate=0.01, tol=0.001, max_iter=100, batch_size=10, reg_type="l2", lambda_=0.01):
         super().__init__(
             num_feats,
             learning_rate=learning_rate,
             tol=tol,
             max_iter=max_iter,
-            batch_size=batch_size
+            batch_size=batch_size,
+            reg_type=reg_type,
+            lambda_=lambda_
+            
         )
     
     def make_prediction(self, X) -> np.array:
@@ -129,9 +135,20 @@ class LogisticRegressor(BaseRegressor):
         Returns: 
             The predicted labels (y_pred) for given X.
         """
-        pass
+
+        # Only add bias if X does NOT already have it
+        if X.shape[1] == self.num_feats:  
+            X_bias = np.hstack([X, np.ones((X.shape[0], 1))])
+        else:
+            X_bias = X 
+
+        # Perform matrix multiplication
+        z = np.dot(X_bias, self.W)
+
+        # Apply sigmoid function
+        return 1 / (1 + np.exp(-z))
     
-    def loss_function(self, y_true, y_pred) -> float:
+    def loss_function(self, y_true, y_pred, reg_type='l2', lambda_=0.01) -> float:
         """
         TODO: Implement binary cross entropy loss, which assumes that the true labels are either
         0 or 1. (This can be extended to more than two classes, but here we have just two.)
@@ -139,13 +156,25 @@ class LogisticRegressor(BaseRegressor):
         Arguments:
             y_true (np.array): True labels.
             y_pred (np.array): Predicted labels.
+            reg_type (str): Type of regularization("l2" for Ridge, "l1" for Lasso, "none" for np regularization).
+            lambda_ (flloat): Reguralization strength. 
 
         Returns: 
             The mean loss (a single number).
         """
-        pass
+        y_pred = np.clip(y_pred, 1e-9, 1 - 1e-9) # Avoid log(0) errors
+        loss = -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
+
+        # Reguralization
+        if reg_type == "l2":
+            reg_term = lambda_ * np.sum(self.W[:-1] ** 2)
+        elif reg_type == "l1":
+            reg_term = lambda_ * np.sum(np.abs(self.W[:-1]))
+        else:
+            reg_term = 0
+        return loss + reg_term
         
-    def calculate_gradient(self, y_true, X) -> np.ndarray:
+    def calculate_gradient(self, y_true, X, reg_type='l2', lambda_=0.01) -> np.ndarray:
         """
         TODO: Calculate the gradient of the loss function with respect to the given data. This
         will be used to update the weights during training.
@@ -153,8 +182,30 @@ class LogisticRegressor(BaseRegressor):
         Arguments:
             y_true (np.array): True labels.
             X (np.ndarray): Matrix of feature values.
+            reg_type (str): Type of regularization("l2" for Ridge, "l1" for Lasso, "none" for np regularization).
+            lambda_ (flloat): Reguralization strength. 
 
         Returns: 
             Vector of gradients.
         """
-        pass
+        
+        # Get the predictions
+        y_pred = self.make_prediction(X)
+        
+        # Compute the gradient (gradient of binary cross-entropy with respect to weights)
+        grad = np.dot(X.T, (y_pred - y_true)) / X.shape[0]
+        # Reguralization
+        if reg_type == "l2":  
+            if grad.shape == self.W[:-1].shape:
+                grad += (lambda_ * self.W[:-1])
+            else:
+                grad[:-1] += (lambda_ * self.W[:-1])
+        
+        elif reg_type == "l1": 
+            if grad.shape == self.W[:-1].shape:
+                grad += (lambda_ * np.sign(self.W[:-1]))
+            else:
+                grad[:-1] += (lambda_ * np.sign(self.W[:-1]))
+
+        return grad
+            
